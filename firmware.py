@@ -6,9 +6,15 @@ The control logic is ported function by function, with the firmware's own names
 
     millis()                 -> now_ms passed to tick()
     analogReadMilliVolts()   -> ir_left_mv / ir_right_mv passed to tick()
-    MC6470 I2C read          -> head_acc / tail_acc (g, board axes) passed to tick()
+    BMI270 I2C read          -> head_acc / tail_acc (g, board axes) passed to tick()
     ledcWrite()              -> servoDeg[], the angle the PWM pulse asks the servo for
-    Serial                   -> command(line) in, list of printed lines out (self.out)
+    Serial and Bluetooth     -> command(line) in, list of printed lines out (self.out)
+                                (the stop when the Bluetooth link drops is not ported)
+    Preferences (flash)      -> not ported: trims and IMU zero offsets live only until reset
+    I2C scan, raw IR (x)     -> not ported
+
+The IMU axes stay the simulation's (the model's IMU sites are mounted level, x forward,
+y left); the real robot's axes are set in the .ino.
 
 It mirrors snake_robot/snake_robot.ino, which is the version pasted on 2026-10-01
 plus additions that came out of the simulation (marked [SIM] there, NOT IN THE
@@ -74,6 +80,10 @@ class Imu:
         self.bufLeft = [0.0] * AVG_N
         self.sumFwd = 0.0
         self.sumLeft = 0.0
+        # zero offsets for a board that is not mounted level, set with "c"
+        self.pitchOff = 0.0           # deg
+        self.fwdOff = 0.0             # g
+        self.leftOff = 0.0            # g
 
 
 class Kink:
@@ -215,7 +225,7 @@ class Firmware:
         self.out.append("Snake robot starting")
         for i in range(7):
             self.setJoint(i, 0)       # everything straight
-        self.out.append("Stopped. Type g to go, s to stop, p for telemetry.")
+        self.out.append("Stopped. Type r to run, s to stop, p for telemetry.")
 
     def millis(self):
         return self.now_ms
@@ -230,13 +240,13 @@ class Firmware:
         # the pulse the servo actually sees, turned back into a joint angle
         pulse_us = duty * 20000 / (1 << self.PWM_BITS)
         servo = (pulse_us - self.SERVO_CENTER_US) / self.SERVO_US_PER_DEG
-        self.servoDeg[i] = (servo - self.JOINT_TRIM_DEG[i]) / self.JOINT_DIR[i]
+        self.servoDeg[i] = servo / self.JOINT_DIR[i] - self.JOINT_TRIM_DEG[i]
 
     def setJoint(self, i, deg):
         """deg is the joint angle in the robot convention described at the top."""
         deg = constrain(deg, -self.JOINT_LIMIT_DEG, self.JOINT_LIMIT_DEG)
         self.jointDeg[i] = deg
-        us = self.SERVO_CENTER_US + (self.JOINT_DIR[i] * deg + self.JOINT_TRIM_DEG[i]) * self.SERVO_US_PER_DEG
+        us = self.SERVO_CENTER_US + self.JOINT_DIR[i] * (deg + self.JOINT_TRIM_DEG[i]) * self.SERVO_US_PER_DEG
         self.servoWriteUs(i, int(math.floor(us + 0.5)))     # lroundf
 
     # ------------------------------------------------------------ IR sensors
@@ -279,13 +289,14 @@ class Firmware:
             return
         m.acc = list(acc)
 
-        # pitch = angle of the forward axis above the horizontal plane
+        # pitch = angle of the forward axis above the horizontal plane, minus the board's mounting tilt
         fwd = m.acc[m.fwdAxis] * m.fwdSign
         o1 = m.acc[(m.fwdAxis + 1) % 3]
         o2 = m.acc[(m.fwdAxis + 2) % 3]
-        m.pitch = math.degrees(math.atan2(fwd, math.sqrt(o1 * o1 + o2 * o2)))
+        m.pitch = math.degrees(math.atan2(fwd, math.sqrt(o1 * o1 + o2 * o2))) - m.pitchOff
+        fwd -= m.fwdOff
 
-        left = m.acc[m.leftAxis] * m.leftSign
+        left = m.acc[m.leftAxis] * m.leftSign - m.leftOff
 
         # moving average over one wave period cancels the side to side wobble
         if not m.primed:
@@ -575,10 +586,41 @@ class Firmware:
             self.out.append("%s IMU: not found" % m.name)
             return
         self.out.append("%s IMU  x %+.2f g   y %+.2f g   z %+.2f g   pitch %+.1f deg   avg fwd %+.3f g  left %+.3f g"
-                        % (m.name, m.acc[0], m.acc[1], m.acc[2], m.pitch, m.fwdAvg, m.leftAvg))
+                        "   zero: pitch %+.1f deg fwd %+.3f g left %+.3f g"
+                        % (m.name, m.acc[0], m.acc[1], m.acc[2], m.pitch, m.fwdAvg, m.leftAvg,
+                           m.pitchOff, m.fwdOff, m.leftOff))
+
+    # ------------------------------------------------------------ calibration
+    def printTrims(self):
+        self.out.append("trims" + "".join("  %s %+.1f" % (JOINT_NAME[i], self.JOINT_TRIM_DEG[i])
+                                          for i in range(7)) + " deg")
+
+    def printImuCal(self, m):
+        self.out.append("%s IMU zero: pitch %+.1f deg  fwd %+.3f g  left %+.3f g"
+                        % (m.name, m.pitchOff, m.fwdOff, m.leftOff))
+
+    def calibrateImu(self, m, clear):
+        """The averages of the last 2 s are what the board reads with the robot lying level,
+        so they become part of the offsets.  The averages then start over from the new zero."""
+        if clear:
+            m.pitchOff = m.fwdOff = m.leftOff = 0.0
+        elif m.ok and m.primed:
+            m.pitchOff += m.pitchAvg
+            m.fwdOff += m.fwdAvg
+            m.leftOff += m.leftAvg
+        else:
+            self.out.append("%s IMU: no data, not calibrated" % m.name)
+            return
+        m.primed = False
+        self.printImuCal(m)
+
+    def stopRobot(self):
+        self.setMode(STOPPED)
+        self.resetTerrain()
+        self.out.append("STOP")
 
     def command(self, line):
-        """handleSerial() for one received line."""
+        """handleLine(): one received line, from USB or Bluetooth."""
         line = line.strip()
         if not line:
             return
@@ -593,19 +635,17 @@ class Firmware:
         v1 = v[0] if n >= 1 else 0.0
         v2 = v[1] if n >= 2 else 0.0
 
-        if cmd == "g":
+        if cmd in ("r", "g"):                     # run; g is the old name for it
             for i in range(7):
                 self.manualDeg[i] = 0
             self.resetTerrain()
             self.setMode(CRAWL)
-            self.out.append("GO")
+            self.out.append("RUN")
         elif cmd == "s":
-            self.setMode(STOPPED)
-            self.resetTerrain()
-            self.out.append("STOP")
+            self.stopRobot()
         elif cmd == "p":
             self.printTelemetry = not self.printTelemetry
-        elif cmd == "r":
+        elif cmd == "i":
             self.printRawImu(self.headImu)
             self.printRawImu(self.tailImu)
         elif cmd == "j":
@@ -643,8 +683,26 @@ class Firmware:
         elif cmd == "w":
             self.wallTurn = not self.wallTurn
             self.out.append("at a wall: %s" % ("keep turning" if self.wallTurn else "back up, then turn"))
+        elif cmd == "t":
+            if n < 1:
+                self.printTrims()
+            elif self.mode != STOPPED:
+                self.out.append("Stop first (s)")
+            elif n == 2 and 1 <= v1 <= 7:
+                self.JOINT_TRIM_DEG[int(v1) - 1] = constrain(v2, -30.0, 30.0)
+                self.printTrims()
+            else:
+                self.out.append("Use: t N DEG   (N = 1..7), or t to list")
+        elif cmd == "c":
+            if self.mode != STOPPED:
+                self.out.append("Stop first (s)")
+            else:
+                self.calibrateImu(self.headImu, n >= 1 and v1 == 0)
+                self.calibrateImu(self.tailImu, n >= 1 and v1 == 0)
+        elif cmd == "x":
+            self.out.append("x (I2C scan, raw IR) only runs on the robot")
         else:
-            self.out.append("Commands: g s p r v h e b k w  j N DEG  a DEG  f HZ")
+            self.out.append("Commands: r (run) s (stop) p i x c v h e b k w  j N DEG  t N DEG  a DEG  f HZ")
 
     def telemetryLine(self):
         line = ("%-7s IR L %5.1f R %5.1f  steer %+5.1f  pitch head %+5.1f tail %+5.1f  base %+5.1f  bends"

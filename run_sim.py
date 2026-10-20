@@ -14,12 +14,13 @@ side walls: up, down into a valley, up, a flat section, down.
 Two controllers, chosen with the tabs in the panel (or --controller):
 
 ESP32 firmware (default): firmware.py, a port of snake_robot/snake_robot.ino, ticking
-    at 50 Hz against simulated sensors.  The head and tail accelerometers (MC6470:
-    +-2 g, 14 bit) are MuJoCo accelerometers; the two Sharp IR sensors are rays cast
+    at 50 Hz against simulated sensors.  The head and tail accelerometers (BMI270:
+    +-2 g, 16 bit) are MuJoCo accelerometers; the two Sharp IR sensors are rays cast
     from the sensor seats on the nose, turned into the sensor's output voltage and
     fed through the firmware's own sharpToCm().  In the panel the robot starts
-    STOPPED like the real one: press Go, or type the Serial Monitor commands
-    (g, s, p, r, j N DEG, a DEG, f HZ, and the switches v h e b k w) in the serial box.
+    STOPPED like the real one: press Run, or type the Serial Monitor / Bluetooth commands
+    (r, s, p, i, c, j N DEG, t N DEG, a DEG, f HZ, and the switches v h e b k w) in the
+    serial box.
     The .ino and the port contain additions to the version first pasted, marked
     [SIM] in the .ino; each has a switch (FW_FLAGS, a checkbox in the panel):
     the wave on the pitch joints, slope and edge steering for the open ramp, the
@@ -169,8 +170,8 @@ class FirmwareController:
 
     TICK = 1.0 / fw.Firmware.LOOP_HZ
     G = 9.81
-    ACC_RANGE_G = 2.0           # MC6470 in +-2 g, 14 bit mode
-    ACC_LSB_PER_G = 4096.0
+    ACC_RANGE_G = 2.0           # BMI270 in +-2 g, 16 bit
+    ACC_LSB_PER_G = 16384.0
     IR_DRAW_M = 0.30            # length of the drawn ray when nothing is in range
 
     def __init__(self, model, data):
@@ -221,7 +222,7 @@ class FirmwareController:
     # ---- simulated sensors
     def read_acc(self, name):
         """Acceleration averaged over the last tick, then clipped and quantised like the
-        MC6470.  The average stands in for the sensor's limited bandwidth (64 Hz output
+        BMI270.  The average stands in for the sensor's limited bandwidth (100 Hz output
         rate): one instantaneous sample would alias the simulation's 1 kHz contact chatter."""
         adr = self.acc_adr[name]
         a = self.acc_sum[adr:adr + 3] / self.acc_count / self.G
@@ -539,7 +540,7 @@ class ControlPanel:
 
         run = ttk.Frame(parents["fw"])
         run.pack(fill="x", pady=(0, 4))
-        ttk.Button(run, text="Go (g)", command=lambda: self._send("g")).pack(side="left")
+        ttk.Button(run, text="Run (r)", command=lambda: self._send("r")).pack(side="left")
         ttk.Button(run, text="Stop (s)", command=lambda: self._send("s")).pack(side="left", padx=6)
         ttk.Label(parents["sine"], justify="left", font=self.MONO, text=(
             "θ_k = A·sin(2πf·t + k·Δφ [+ φ_vh]) + O\n"
@@ -737,7 +738,7 @@ def parse_args():
 def run_headless(sim, duration):
     firmware = sim.controller == "firmware"
     if firmware:
-        sim.command("g")                      # the real robot waits for "g" on the serial port
+        sim.command("r")                      # the real robot waits for "r" (USB or Bluetooth)
     mode = sim.fwc.fw.mode
     board, left = sim.track()[2:]
     while sim.data.time < duration:
