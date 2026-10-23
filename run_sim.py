@@ -19,7 +19,7 @@ ESP32 firmware (default): firmware.py, a port of snake_robot/snake_robot.ino, ti
     from the sensor seats on the nose, turned into the sensor's output voltage and
     fed through the firmware's own sharpToCm().  In the panel the robot starts
     STOPPED like the real one: press Run, or type the Serial Monitor / Bluetooth commands
-    (r, s, p, i, c, j N DEG, t N DEG, a DEG, f HZ, and the switches v h e b k w) in the
+    (r, s, p, i, c, j N DEG, t N DEG, a DEG, f HZ, d DEG, and the switches v h e b k w) in the
     serial box.
     The .ino and the port contain additions to the version first pasted, marked
     [SIM] in the .ino; each has a switch (FW_FLAGS, a checkbox in the panel):
@@ -85,7 +85,7 @@ PARAMS = [
     # ---- ESP32 firmware: the variables and constants of the .ino
     Param("amp",          "Amplitude (a)",   0.0,  45.0, 45.0, "deg", 1.0,   "Gait", "fw", "gaitAmpDeg"),
     Param("fw_freq",      "Frequency (f)",   0.05,  2.0,  0.5, "Hz",  0.01,  "Gait", "fw", "gaitFreqHz"),
-    Param("fw_phase",     "Phase lag",    -180.0, 180.0, 120.0, "deg", 1.0,  "Gait", "fw", "gaitPhaseDeg"),
+    Param("fw_phase",     "Phase lag (d)", 0.0, 180.0, 120.0, "deg", 1.0,  "Gait", "fw", "gaitPhaseDeg"),
     Param("steer_gain",   "Steer gain",      0.0,   5.0,  2.5, "°/cm", 0.1,  "Steering and slopes", "fw", "STEER_GAIN"),
     Param("slope_gain",   "Slope steer gain", 0.0,  5.0,  0.5, "°/°", 0.1,   "Steering and slopes", "fw", "SLOPE_STEER_GAIN"),
     Param("kink_trigger", "Kink trigger",    1.0,  20.0,  6.0, "deg", 0.5,   "Steering and slopes", "fw", "KINK_TRIGGER_DEG"),

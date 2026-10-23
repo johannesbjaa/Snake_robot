@@ -32,6 +32,10 @@
     j N DEG    set joint N (1..7) to DEG degrees, only while stopped
     a DEG      set wave amplitude in degrees
     f HZ       set wave frequency in Hz
+    d DEG      set the phase difference between neighbouring joints of the wave (0..180,
+               default 120 = one wave along the body).  Smaller: longer wave, the body
+               lifts and lands more in step.  It moves to the new value at 30 deg/s.
+               a, f and d are not saved: they go back to the defaults at power up.
     x          diagnostics: scan both I2C buses, retry the IMUs, raw IR millivolts
 
   Calibration (only while stopped, saved in flash, survives power off)
@@ -112,7 +116,10 @@ const float JOINT_LIMIT_DEG  = 60.0;   // keep inside what the printed module al
 float JOINT_TRIM_DEG[7] = {0, 0, 0, 0, 0, 0, 0};   // horn not perfectly centred, in the joint's
                                                     // own sign; set with "t N DEG", the saved values
                                                     // in flash replace these
-int   JOINT_DIR[7]      = {1, 1, 1, 1, 1, 1, 1};   // -1 if the joint turns the wrong way
+int   JOINT_DIR[7]      = {1, -1, 1, -1, 1, -1, 1};   // -1 if the joint turns the wrong way
+// Checked on the robot 2026-10-23 with "j N 25": Y2, Y4 and Y6 bent RIGHT, so they are -1.
+// The pitch joints are left at +1: the robot crawls head first.
+// Changing a joint's DIR also flips what its trim does: negate its trim with "t N DEG".
 
 const int YAW_JOINTS[3]   = {1, 3, 5};      // Y2 Y4 Y6
 const int PITCH_JOINTS[4] = {0, 2, 4, 6};   // P1 P3 P5 P7
@@ -125,7 +132,8 @@ const int   LOOP_MS = 1000 / LOOP_HZ;
 
 float gaitAmpDeg   = 45.0;    // wave amplitude  [SIM] was 30; 45 with STEER_GAIN 2.5 gets over the course in the simulation
 float gaitFreqHz   = 0.5;     // wave frequency
-float gaitPhaseDeg = 120.0;   // phase lag between neighbouring joints of the wave
+float gaitPhaseDeg = 120.0;   // phase lag between neighbouring joints of the wave (set with d)
+float phaseLagDeg  = 120.0;   // the lag in use: follows gaitPhaseDeg at PHASE_RATE_DEG_S
 
 // [SIM] which joints carry the travelling wave
 //   true  - pitch joints (vertical wave, runs tail to head).  Works without wheels.
@@ -135,6 +143,8 @@ bool gaitVertical = true;
 
 const float RAMP_PER_S       = 0.5;    // amplitude ramps 0 -> 100 % in 2 s (softer on the battery)
 const float PITCH_RATE_DEG_S = 60.0;   // max speed of pitch joints when the bend moves
+const float PHASE_RATE_DEG_S = 30.0;   // how fast a new phase difference is taken up; a jump
+                                       // would snap the rear joints by up to 45 deg at once
 
 // =====================================================================
 // 4. STEERING FROM THE IR SENSORS
@@ -815,7 +825,8 @@ void updateGait(float dt) {
 
   // Yaw: travelling wave from head to tail, plus a steering offset
   // [SIM] gaitVertical: no wave here, the yaw joints only steer
-  float lag = gaitPhaseDeg * DEG_TO_RAD;
+  phaseLagDeg = approach(phaseLagDeg, gaitPhaseDeg, PHASE_RATE_DEG_S * dt);
+  float lag = phaseLagDeg * DEG_TO_RAD;
   for (int k = 0; k < 3; k++) {
     int j = YAW_JOINTS[k];
     float wave = gaitVertical ? 0.0f : gaitAmpDeg * sinf(gaitPhase - k * lag);
@@ -991,6 +1002,11 @@ void handleLine(String line) {
       out.printf("frequency %.2f Hz\n", gaitFreqHz);
       break;
 
+    case 'd':
+      if (n >= 1) gaitPhaseDeg = constrain(v1, 0.0f, 180.0f);
+      out.printf("phase difference %.0f deg\n", gaitPhaseDeg);
+      break;
+
     case 't':
       if (n < 1) { printTrims(); break; }
       if (mode != STOPPED) { out.println("Stop first (s)"); break; }
@@ -1046,7 +1062,7 @@ void handleLine(String line) {
       break;
 
     default:
-      out.println("Commands: r (run) s (stop) p i x c v h e b k w  j N DEG  t N DEG  a DEG  f HZ");
+      out.println("Commands: r (run) s (stop) p i x c v h e b k w  j N DEG  t N DEG  a DEG  f HZ  d DEG");
   }
 }
 

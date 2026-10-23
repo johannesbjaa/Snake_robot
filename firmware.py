@@ -13,8 +13,9 @@ The control logic is ported function by function, with the firmware's own names
     Preferences (flash)      -> not ported: trims and IMU zero offsets live only until reset
     I2C scan, raw IR (x)     -> not ported
 
-The IMU axes stay the simulation's (the model's IMU sites are mounted level, x forward,
-y left); the real robot's axes are set in the .ino.
+The IMU axes and JOINT_DIR stay the simulation's (the model's IMU sites are mounted level,
+x forward, y left, and run_sim.py maps every joint to the firmware's sign convention); the
+real robot's axes and joint directions (Y2, Y4, Y6 reversed) are set in the .ino.
 
 It mirrors snake_robot/snake_robot.ino, which is the version pasted on 2026-10-01
 plus additions that came out of the simulation (marked [SIM] there, NOT IN THE
@@ -106,6 +107,7 @@ class Firmware:
     LOOP_HZ = 50
     RAMP_PER_S = 0.5
     PITCH_RATE_DEG_S = 60.0
+    PHASE_RATE_DEG_S = 30.0       # how fast a new phase difference (d) is taken up
 
     # ---- 4. steering from the IR sensors
     IR_MIN_CM = 4.0
@@ -163,7 +165,8 @@ class Firmware:
 
         self.gaitAmpDeg = 45.0        # was 30 in the pasted .ino; 45 with STEER_GAIN 2.5 gets over the course in the simulation
         self.gaitFreqHz = 0.5
-        self.gaitPhaseDeg = 120.0
+        self.gaitPhaseDeg = 120.0     # phase lag between neighbouring joints of the wave (set with d)
+        self.phaseLagDeg = 120.0      # the lag in use: follows gaitPhaseDeg at PHASE_RATE_DEG_S
         # NOT IN THE PASTED .ino: which joints carry the travelling wave.
         #   True  - pitch joints (vertical "caterpillar" wave, runs tail to head).  Works
         #           with the same friction in every direction, i.e. without wheels.
@@ -564,7 +567,8 @@ class Firmware:
 
         # Yaw: travelling wave from head to tail, plus a steering offset
         # (gaitVertical: no wave here, the yaw joints only steer)
-        lag = math.radians(self.gaitPhaseDeg)
+        self.phaseLagDeg = approach(self.phaseLagDeg, self.gaitPhaseDeg, self.PHASE_RATE_DEG_S * dt)
+        lag = math.radians(self.phaseLagDeg)
         for k in range(3):
             j = YAW_JOINTS[k]
             wave = 0.0 if self.gaitVertical else self.gaitAmpDeg * math.sin(self.gaitPhase - k * lag)
@@ -665,6 +669,10 @@ class Firmware:
             if n >= 1:
                 self.gaitFreqHz = constrain(v1, 0.05, 2.0)
             self.out.append("frequency %.2f Hz" % self.gaitFreqHz)
+        elif cmd == "d":
+            if n >= 1:
+                self.gaitPhaseDeg = constrain(v1, 0.0, 180.0)
+            self.out.append("phase difference %.0f deg" % self.gaitPhaseDeg)
         elif cmd == "v":
             self.gaitVertical = not self.gaitVertical
             self.out.append("wave on the %s joints" % ("pitch" if self.gaitVertical else "yaw"))
@@ -702,7 +710,7 @@ class Firmware:
         elif cmd == "x":
             self.out.append("x (I2C scan, raw IR) only runs on the robot")
         else:
-            self.out.append("Commands: r (run) s (stop) p i x c v h e b k w  j N DEG  t N DEG  a DEG  f HZ")
+            self.out.append("Commands: r (run) s (stop) p i x c v h e b k w  j N DEG  t N DEG  a DEG  f HZ  d DEG")
 
     def telemetryLine(self):
         line = ("%-7s IR L %5.1f R %5.1f  steer %+5.1f  pitch head %+5.1f tail %+5.1f  base %+5.1f  bends"
